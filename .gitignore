@@ -2,11 +2,11 @@
 
 config/environment.env
 data/
-logs/*.txt
+lucrl/logs/*.txt
 notebooks/
 
 # except
-!logs/*.jpg
+!lucrl/logs/*.jpg
 
 
 # ============ GENERAL PYTHON ============
