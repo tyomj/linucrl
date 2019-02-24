@@ -1,0 +1,47 @@
+# general things
+system_workers_count: 10
+
+# dataset path and settings
+dataset:
+  movies_path: ml-1m/movies.csv
+  ratings_path: ml-1m/ratings.csv
+  min_num_of_ratings: 10000
+  GENRES:
+    - Action
+    - Adventure
+    - Animation
+    - Children
+    - Comedy
+    - Crime
+    - Documentary
+    - Drama
+    - Fantasy
+    - Film-Noir
+    - Horror
+    - IMAX
+    - Musical
+    - Mystery
+    - Romance
+    - Sci-Fi
+    - Thriller
+    - War
+    - Western
+
+# MDP params
+mdp:
+  window_size: 3
+  state_delimiter: "-"
+
+# LinUCRL params
+linucrl:
+  eval_it: 100 # evaluate current policy every N rounds
+  eval_steps: 100 # number of steps to take during evaluation
+  d: 5 # number of polynomial features
+  max_rounds: 1000 # maximum number of rounds for the whole algorithm
+  d_rate: 0.50 # gamma parameter for value iteration
+  vi_threshold: 0.001 # when to stop VI algorithm
+  linreg_reg_term: 0.90
+  alpha:  1.5 # a parameter to limit boredoom effect (?) Have no idea about the range, but the value `1.5` is used in paper.
+  R_constant: 1 # no idea, but 1 is OK since it is constant
+  B_constant: 1 # no idea, but 1 is OK since it is constant
+
