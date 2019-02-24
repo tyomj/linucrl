@@ -10,11 +10,11 @@ This repository contains:
 
 **Disclaimer**
 
-This is an unofficial implementation and using this code you may not achieve the same results that were described in the paper.
+This is an unofficial implementation and using this code you may not achieve the same results that were described in the paper ¯\_(ツ)_/¯.
 
 ### Requirements
 
-Requires Python 3.6 and tested on Ubuntu 16.04.
+Requires Python 3.6. Tested on Ubuntu 16.04 only.
 Please check out `requirements.txt` for resolving dependency issues.
 
 ### Quick start
@@ -28,7 +28,6 @@ Please check out `requirements.txt` for resolving dependency issues.
     ```
     make -B train
     ```
-
 ### Configuration
 
 Check out configuration file `lucrl/config/config.yaml` which contains parameters for dataset, mdp and LinUCRL algorithm.
