@@ -3,8 +3,10 @@
 config/environment.env
 data/
 logs/*.txt
-logs/*.jpg
 notebooks/
+
+# except
+!logs/*.jpg
 
 
 # ============ GENERAL PYTHON ============
