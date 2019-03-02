@@ -38,10 +38,10 @@ linucrl:
   eval_steps: 100 # number of steps to take during evaluation
   d: 5 # number of polynomial features
   max_rounds: 1000 # maximum number of rounds for the whole algorithm
-  d_rate: 0.50 # gamma parameter for value iteration
+  d_rate: 0.5 # gamma parameter for value iteration
   vi_threshold: 0.001 # when to stop VI algorithm
   linreg_reg_term: 0.90
-  alpha:  1.5 # a parameter to limit boredoom effect (?) Have no idea about the range, but the value `1.5` is used in paper.
+  alpha:  0.5 # a parameter to limit boredom effect
   R_constant: 1 # no idea, but 1 is OK since it is constant
   B_constant: 1 # no idea, but 1 is OK since it is constant
 

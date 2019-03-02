@@ -11,7 +11,7 @@ def train():
     # create a DataFrame for mdp
     df_for_mdp = get_ml_df()
 
-    # get MDB object
+    # get MDP object
     mdp = MDP(df_for_mdp)
 
     # and check it
