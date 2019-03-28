@@ -118,6 +118,7 @@ def get_ml_df():
 
     df = load_and_merge()
     df = filter_genres(df, config['dataset']['min_num_of_ratings'])
+    logger.info("Number of unique actions: {}".format(df.genres.nunique()))
     df = df.sort_values(['user_id', 'timestamp'], ascending=True).reset_index(drop=True)
 
     result = Parallel(n_jobs=WORKERS_COUNT)(delayed(construct_states)(group_, config['mdp']['window_size']) \

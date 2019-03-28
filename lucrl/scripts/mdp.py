@@ -1,6 +1,7 @@
 import random
 import yaml
 import os
+from functools import lru_cache
 
 project_dir = os.path.normpath(os.path.dirname(os.path.abspath(__file__)) + os.sep + os.pardir)
 
@@ -66,6 +67,10 @@ class MDP:
         self.nA = self._df.genres.nunique() # number of unique actions
         self.all_possible_actions = self._get_all_possible_actions() # a tuple of all actions (refers to [K] in the paper)
         self.reset()
+
+        # for optimization
+        self.state_reward_dict = self._df[['state', 'reward']].set_index('state').to_dict(orient='index')
+        self.state_reward_dict = {k: v['reward'] for k, v in self.state_reward_dict.items()}
         random.seed(random_state)
 
     def get_all_states(self):
@@ -76,6 +81,7 @@ class MDP:
         """ return a tuple of all possible states """
         return tuple(self._df.genres.unique())
 
+    @lru_cache(maxsize=None)
     def get_possible_actions(self, state):
         """ return a tuple of possible actions in a given state """
         potential_new_state_start = '-'.join(state.split(self.state_delimiter)[1:])
@@ -86,6 +92,7 @@ class MDP:
         else:
             return tuple()
 
+    @lru_cache(maxsize=None)
     def is_terminal(self, state):
         """ return True if state is terminal or False if it isn't """
         if self.get_possible_actions(state):
@@ -93,7 +100,8 @@ class MDP:
         else:
             return True
 
-    def get_next_states(self, state, action, check_consistency=True):
+    @lru_cache(maxsize=None)
+    def get_next_states(self, state, action, check_consistency=False):
         """ return a dictionary of {next_state1 : P(next_state1 | state, action), next_state2: ...} """
         if check_consistency:
             assert action in self.get_possible_actions(
@@ -105,12 +113,19 @@ class MDP:
         """ return P(next_state | state, action) """
         return self.get_next_states(state, action).get(next_state, 0.0)
 
+    @lru_cache(maxsize=None)
     def get_reward(self, state, action, next_state):
         """ return the reward you get for taking action in state and landing on next_state"""
-        if action in self.get_possible_actions(
-            state):
-            reward = self._df[self._df.state == next_state].reward.values[0]
-            return reward
+        if action in self.get_possible_actions(state):
+            try:
+                #reward = self._df[self._df.state == next_state].reward.values[0]
+                reward = self.state_reward_dict[next_state]
+                return reward
+
+            except Exception as ex:
+                logger.debug("Exception: {}, state: {}, action: {}".format(ex, state, action))
+                return 0
+
         else:
             logger.debug("cannot do action %s from state %s" % (action, state))
             return 0
@@ -132,6 +147,7 @@ class MDP:
 
         return self.current_state, self._initial_reward
 
+    @lru_cache(maxsize=None)
     def virtual_step(self, state, action):
         """
         Take an action from any state u like without updating current state.
@@ -143,18 +159,20 @@ class MDP:
 
         next_state = self.get_next_states(state, action, check_consistency=False)
         reward = self.get_reward(state, action, next_state)
-        is_done = self.is_terminal(next_state)
-        return next_state, reward, is_done
+        #is_done = self.is_terminal(next_state)
+        return next_state, reward, None #, is_done
 
-    def step(self, action):
+    @lru_cache(maxsize=None)
+    def step(self, state, action):
         """
         Take an action for current state, update current state.
 
         :param action:
+        :param state:
         :return: next_state, reward, is_done
         """
-        next_state = self.get_next_states(self.current_state, action)
-        reward = self.get_reward(self.current_state, action, next_state)
+        next_state = self.get_next_states(state, action)
+        reward = self.get_reward(state, action, next_state)
         is_done = self.is_terminal(next_state)
         self.current_state = next_state
         return next_state, reward, is_done

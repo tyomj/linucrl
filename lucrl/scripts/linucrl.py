@@ -5,21 +5,24 @@ import yaml
 import random
 import time
 from tqdm import tqdm
-import matplotlib
-matplotlib.use('Agg')
+from itertools import product
+
+from functools import lru_cache
 
 project_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 
-
-from ..utils.coordinator import Coordinator
+from lucrl.utils.coordinator import Coordinator
 crd = Coordinator(project_dir)
 
-from ..utils.logger import Logger
+from lucrl.utils.logger import Logger
 logger = Logger(project_dir, 'linucrl', 'linucrl.txt')
 
 with open(os.path.join(crd.config.path, 'config.yaml')) as f:
     config = yaml.load(f)
 
+from lucrl.scripts.base import Base
+
+@lru_cache(maxsize=None)
 def make_polynomial_features(recency_value, degree = config['linucrl']['d']):
     """
     recency_value: float
@@ -27,7 +30,7 @@ def make_polynomial_features(recency_value, degree = config['linucrl']['d']):
     """
     return np.array([recency_value ** i for i in range(degree+1)])
 
-
+@lru_cache(maxsize=None)
 def get_features(state, action, construct_initial=False):
     """
     If `construct_initial` is `True` returns initial matrix of features with shape (window_size, d+1).
@@ -63,8 +66,8 @@ def get_features(state, action, construct_initial=False):
         return feature_matrix
     else:
         # for vector
-        return make_polynomial_features(recency_value, config['linucrl']['d'])
-
+        feature_vector = make_polynomial_features(recency_value, config['linucrl']['d'])
+        return feature_vector
 
 def init_reward(state, action, init_reward_list):
     action_sequence = state.split('-')
@@ -76,29 +79,12 @@ def init_counter(state, action):
     action_sequence = state.split('-')
     return action_sequence.count(str(action))
 
-class LinUCRL():
+class LinUCRL(Base):
 
     def __init__(self, mdp):
+        super().__init__(mdp)
 
-        # mdp and global params
-        self.mdp = mdp
-        self.eval_it = config['linucrl']['eval_it']
-        self.eval_steps = config['linucrl']['eval_steps']
-        self.d = config['linucrl']['d'] # number of polynomial features
-        self.window_size = config['mdp']['window_size'] # history len
-        self.d_rate = config['linucrl']['d_rate'] # for VI
-        self.vi_threshold = config['linucrl']['vi_threshold']  # for VI
-        self.alpha_ = config['linucrl']['alpha']
-        self.R_constant_ = config['linucrl']['R_constant']
-        self.B_constant_ = config['linucrl']['B_constant']
-        self.state = None # TODO seems redundant, it's better to use mdp attributes
         self.initial_reward = None
-        self.global_reward = None # for visualization and metrics purposes
-        self.max_rounds = config['linucrl']['max_rounds']
-        self.t = 0
-
-        # assign oracle greedy score for evaluation
-        self.oracle_optimal_score = 0
 
         # parameters for C_t_a
         self.L_w = np.log(self.window_size) + 1
@@ -110,7 +96,8 @@ class LinUCRL():
         # define V matrices that then going to converge to X_transposed*X
         self.idn_matrix = np.identity(self.d + 1)
         self.lambda_ = config['linucrl']['linreg_reg_term']
-        self.V_matrices = {action: (self.lambda_ * self.idn_matrix) for action in self.mdp.all_possible_actions}
+        #self.V_matrices = {action: (self.lambda_ * self.idn_matrix) for action in self.mdp.all_possible_actions}
+        self.V_matrices = {action: (self.alpha_ * self.idn_matrix) for action in self.mdp.all_possible_actions}
 
         # other matrices
         self.X = {action: None for action in self.mdp.all_possible_actions}
@@ -119,12 +106,16 @@ class LinUCRL():
         # and counters
         self.action_global_counter = {action: 0 for action in self.mdp.all_possible_actions}  # how many times we had seen the action since fit started (T_a in the paper)
         self.action_round_counter = {action: 0 for action in self.mdp.all_possible_actions}  # how many times we had seen the action since **round** started (Nu_a in the paper)
-
-        self.policy = {state: random.sample(self.mdp.all_possible_actions, k=1)[0] for state in self.mdp.get_all_states()}
-        self.value_function = {state: 0 for state in self.mdp.get_all_states()}
+        self.actions_taken = []
 
         # since cta value of an action uses in every value iteration step, it's better to cache them
         self.c_t_a_values = {action: 0 for action in self.mdp.all_possible_actions}
+
+        self.all_states_combinations = list(product(*[list(self.mdp.all_possible_actions) for _ in range(self.window_size)]))
+        self.all_states_combinations = set(['-'.join([str(x_) for x_ in x]) for x in self.all_states_combinations])
+
+        self.policy = {state: 0 for state in self.all_states_combinations}
+        self.value_function = {state: 0 for state in self.all_states_combinations}
 
     def _all_vars_initializer(self):
         """
@@ -137,7 +128,7 @@ class LinUCRL():
         # Step 1
         # Reset an environment and observe an initial_state and initial_reward has obtained so far
         self.state, self.initial_reward = self.mdp.reset()
-        self.global_reward = np.array(self.initial_reward)
+        #self.global_reward = np.array(self.initial_reward)
 
         # Step 2
         # For each possible action define an initial feature matrix with shape == (window_size, d+1)
@@ -148,7 +139,8 @@ class LinUCRL():
         # Step 3
         # When the matrix is defined we can easily update our identity matrices
         for action in self.mdp.all_possible_actions:
-            self.V_matrices[action] = self.V_matrices[action] + np.dot(self.X[action].T, self.X[action])
+            m_upd = np.dot(self.X[action].T, self.X[action])
+            self.V_matrices[action] = self.V_matrices[action] + m_upd
 
         # Step 4
         # Init theta vectors for each action based on reward observed so far
@@ -179,13 +171,16 @@ class LinUCRL():
         :return: None
         """
 
-        # updates
-        self.X[action] = np.vstack((self.X[action], feature_vector))
-        self.V_matrices[action] = self.V_matrices[action] + np.dot(feature_vector.reshape(-1, 1),
-                                                                   feature_vector.reshape(-1, 1).T)
-        self.R[action] = np.append(self.R[action], reward)
-        self.global_reward = np.append(self.global_reward, reward)
-        self.action_round_counter[action] += 1
+        if reward != 0:
+            # In the original implementation update uses only for real state with reward
+            self.X[action] = np.vstack((self.X[action], feature_vector))
+
+            matrix_upd = feature_vector.reshape(1,-1).T.dot(feature_vector.reshape(1,-1))
+            self.V_matrices[action] = self.V_matrices[action] + matrix_upd
+            self.R[action] = np.append(self.R[action], reward)
+            self.global_reward = np.append(self.global_reward, reward)
+            self.action_round_counter[action] += 1
+
 
         return None
 
@@ -205,7 +200,7 @@ class LinUCRL():
             # get recency-based polynomial feature vector
             feature_vector = get_features(self.state, action)
             # use mdp to observe next state and real reward
-            self.state, reward, _ = self.mdp.step(action)
+            self.state, reward, _ = self.mdp.step(self.state, action)
             # update all attributes
             self.update_class_instance_vars_in_episode(action, feature_vector, reward)
             self.action_global_counter[action] += 1
@@ -214,9 +209,17 @@ class LinUCRL():
 
     def count_c_t_a(self, action):
         part1 = (1 + ((self.action_global_counter[action] + self.L2_w) / self.lambda_))
-        part2 = self.mdp.nA * self.t**self.alpha_
+        part2 = self.mdp.nA * (self.t+1)**self.alpha_
         result = np.sqrt((self.d + 1) * np.log(part1 * part2))
-        return self.R_constant_ * result + self.lambda_ ** 0.5 * self.B_constant_
+        conf = result + self.lambda_ ** 0.5
+
+        # from original
+        if self.action_global_counter[action] == 0:
+            conf *= 10.0
+        else:
+            conf *= 0.01
+
+        return conf
 
     def linear_reward_function(self, state, action, theta):
 
@@ -234,187 +237,152 @@ class LinUCRL():
 
         return optimistic_reward
 
-    def value_iteration(self, V, thresh, discount_factor, reward_source='linucb'):
+    def one_step_lookahead(self, _state, _action, _V, _precomputed_rewards, _all_possible_states, _discount_factor):
+        """
+        Observe one step ahead.
+
+        :param _state: The state to consider (int)
+        :param _action: The state to consider (int)
+        :param _V: The value to use as an estimator, Vector of length env.nS
+        :param _precomputed_rewards: The value to use as an estimator, Vector of length env.nS
+        :param _all_possible_states: The value to use as an estimator, Vector of length env.nS
+        :param _discount_factor: The value to use as an estimator, Vector of length env.nS
+
+        :return: A vector of length mdp.nA containing the expected value of each action.
+        """
+        r = 0
+        _reward = _precomputed_rewards[_state][_action]
+        _next_state = self.mdp.get_next_states(_state, _action, check_consistency=False)
+        if _next_state in _all_possible_states:
+            r += _reward + _discount_factor * _V[_next_state]
+        else:
+            r += _reward
+
+        return r
+
+    def value_iteration(self, V, discount_factor):
         """
         Value Iteration function.
 
         :param V: Value function to update
-        :param thresh: We stop evaluation once our value function change is less than theta for all states.
         :param discount_factor: Gamma discount factor.
-        :param reward_source: Defines which type of reward calculation to use.
-                Takes two possible values:
-                    `linucb` - get the reward from linear fucntion and UCB
-                    `mdp` - get the reward directly from MDP (for oracle greedy VI)
 
         :return: A tuple (policy, V) of the optimal policy and the optimal value function.
         """
         logger.info('Starting value iteration')
         all_possible_acts = self.mdp.all_possible_actions
+        all_possible_states = self.all_states_combinations
 
-        def one_step_lookahead(state, V):
-            """
-            Observe one step ahead.
+        logger.info('Precomputing reward')
+        # compute rewards once(!!!) for optimization purposes (taken from original)
+        _rewards = dict.fromkeys(list(V.keys()))
+        for state in tqdm(set(list(V.keys()))):
+            _rewards[state] = dict.fromkeys(all_possible_acts)
+            for action in all_possible_acts:
+                reward = self.linear_reward_function(state, action, theta=self.theta_vectors)
+                _rewards[state][action] = reward
 
-            :param state: The state to consider (int)
-            :param V: The value to use as an estimator, Vector of length env.nS
+        shuffled_states = list(V.keys())
+        random.shuffle(shuffled_states)
 
-            :return: A vector of length mdp.nA containing the expected value of each action.
-            """
+        logger.info('Value iteration')
 
-            A = pd.Series(np.zeros(len(all_possible_acts)), index=all_possible_acts)
-
-            for action in A.index:
-                if reward_source == 'linucb':
-                    reward = self.linear_reward_function(state, action, theta=self.theta_vectors)
-                    next_state = self.mdp.get_next_states(state, action, check_consistency=False)
-                elif reward_source == 'mdp':
-                    next_state, reward, _ = self.mdp.virtual_step(state, action)
-                else:
-                    assert "Wrong value for parameter `reward_source`"
-                try:
-                    A[action] += reward + discount_factor * V[next_state]
-                except KeyError:
-                    A[action] += reward
-
-            return A
-
-        while True:
-            # Stopping condition
-            delta = 0
+        for i_ in tqdm(range(self.vi_iters)):
             # Update each state...
-            for s in V.keys():
-                terminal = self.mdp.is_terminal(s)
+            for s in shuffled_states:
+                # Update the value function
+                V[s] = max(list(map(lambda a: self.one_step_lookahead(_state=s,
+                                                                      _action=a,
+                                                                      _V=V,
+                                                                      _precomputed_rewards=_rewards,
+                                                                      _all_possible_states=all_possible_states,
+                                                                      _discount_factor=discount_factor),
+                                    all_possible_acts)))
 
-                if not terminal:
-                    A = one_step_lookahead(s, V)
-                    best_action_value = A.max()
-                    # Calculate delta across all states seen so far
-                    delta = max(delta, np.abs(best_action_value - V[s]))
-                    # Update the value function
-                    V[s] = best_action_value
-                else:
-                    # If the state was terminal then there are no options to choose, hence there is no reward to observe
-                    V[s] = 0
-                    # Check if we can stop
-            logger.info("delta is: {}".format(delta))
-            if delta < thresh:
-                break
-
+        logger.info('Obtain the best policy so far')
         # Create a deterministic policy using the optimal value function
         policy = {}
         for s in tqdm(V.keys()):
             # One step lookahead to find the best action for this state
-            A = one_step_lookahead(s, V)
-            best_action = A.idxmax()
+            A_dict = {a: self.one_step_lookahead(_state=s,
+                                                 _action=a,
+                                                 _V=V,
+                                                 _precomputed_rewards=_rewards,
+                                                 _all_possible_states=all_possible_states,
+                                                 _discount_factor=discount_factor)[0][0] for a in all_possible_acts}
+            A_ = pd.Series(A_dict)
+            best_action = A_.idxmax()
             # Always take the best action
             policy[s] = best_action
         logger.info('Value iteration finished')
         return policy, V
 
-    def _get_oracle_optimal(self):
-        logger.info('Calculating oracle reward ...')
-        start = time.time()
-        zero_value_function = {state: 0 for state in self.mdp.get_all_states()}
-        policy_, value_function_ = self.value_iteration(V=zero_value_function, thresh=self.vi_threshold,
-                                                                discount_factor=self.d_rate, reward_source='mdp')
-        state_ = random.choice(tuple(self.mdp._df.state.tolist()))
-        eval_cumulative_reward = []
-        for _ in range(self.max_rounds):
-            # Choose an action
-            action_ = policy_[state_]
-            # Get reward and next state
-            state_, reward_, _ = self.mdp.virtual_step(state_, action_)
-            # Append to evaluation reward
-            eval_cumulative_reward.append(reward_)
-        end = time.time()
-        logger.info('Oracle reward calculated. Time elapsed: {}'.format(end - start))
-        eval_cumulative_reward = np.array(eval_cumulative_reward)
-        logger.info('Oracle sum reward: {}'.format(np.sum(eval_cumulative_reward)))
-
-        return eval_cumulative_reward
-
-    def fit(self, calc_oracle_optimal=True):
+    def fit(self):
         """
         Fit LinUCRL model.
 
-        :param calc_oracle_optimal: if `True` calculates oracle optima reward to compare with validation and plot results.
         :return:
         """
-
-        if calc_oracle_optimal:
-            self.oracle_optimal_score = self._get_oracle_optimal()
 
         self._all_vars_initializer()
         self._all_actions_initializer()
 
         # to avoid zero multiplication in c_t_a
-        self.t = 1
+        self.t = np.sum(list(self.action_global_counter.values()))
+
+        zero_value_function = {state: 0 for state in self.all_states_combinations}
 
         while self.t < self.max_rounds:
             logger.info("Round {}".format(self.t))
 
-            assert self.state == self.mdp.current_state
+
+            if not self.state == self.mdp.current_state:
+
+                self.state, _ = self.mdp.reset()
 
             # Choose an action
+            #print("state: {}".format(self.state))
             action = self.policy[self.state]
+
+            #print("action: {}".format(action))
             # Obtain a feature vector
             feature_vector = get_features(self.state, action)
+            #print("feature_vector: {}".format(feature_vector))
             # Use mdp to observe next state and real reward
-            self.state, reward, _ = self.mdp.step(action)
-            # Update all attributes
-            self.update_class_instance_vars_in_episode(action, feature_vector, reward)
+            self.state, reward, _ = self.mdp.step(self.state, action)
 
-            #if after pulling the arm, round_counter exceeds global_counter then
-            if self.action_round_counter[action] > self.action_global_counter[action]:
 
-                start = time.time()
-                # Update cta values
-                self.c_t_a_values = {action: self.count_c_t_a(action) for action in self.mdp.all_possible_actions}
-                #logger.info("Cta values: {} ".format(str(self.c_t_a_values)))
-                # Run value iteration
-                self.policy, self.value_function = self.value_iteration(V=self.value_function, thresh=self.vi_threshold, discount_factor=self.d_rate, reward_source='linucb')
-                # and reassign global counter so that each time it's going to increase twice
-                self.action_global_counter[action] += self.action_round_counter[action]
-                # Reset action counter before new round is started
-                self.action_round_counter = {action: 0 for action in self.mdp.all_possible_actions}
-                end = time.time()
-                logger.info('Policy updated. Time elapsed: {}'.format(end - start))
-                #logger.info("Global counter state: {}".format(str(self.action_global_counter)))
+            if reward != 0:
+                self.actions_taken.append(action)
+
+                # Update all attributes
+                self.update_class_instance_vars_in_episode(action, feature_vector, reward)
+                self.t += 1
+
+                # if after pulling the arm, round_counter exceeds global_counter then
+                if (self.action_round_counter[action] > self.action_global_counter[action]) and (
+                    self.action_round_counter[action] > 1):
+
+                    start = time.time()
+                    # Update cta values
+                    self.c_t_a_values = {action: self.count_c_t_a(action) for action in self.mdp.all_possible_actions}
+                    #print("c_t_a_values: {}".format(self.c_t_a_values))
+                    # and reassign global counter so that each time it's going to increase twice
+                    self.action_global_counter[action] += self.action_round_counter[action]
+                    # Reset action counter before new round is started
+                    self.action_round_counter = {action: 0 for action in self.mdp.all_possible_actions}
+                    # Run value iteration
+                    self.policy, self.value_function = self.value_iteration(V=self.value_function,
+                                                                            discount_factor=self.d_rate)
+                    end = time.time()
+                    logger.info('Policy updated. Time elapsed: {}'.format(end - start))
+                    #print("Global counter state:  %s", self.action_global_counter)
+                else:
+                    logger.info('Continue without update')
+
             else:
-                logger.info('Continue without update')
-
-            """
-            # Evaluate maximum reward every N rounds
-            if self.t % self.eval_it == 0:
-                print('Evaluation started')
-                start = time.time()
-                state_ = random.choice(tuple(self.mdp._df.state.tolist()))
-                eval_cumulative_reward = []
-                for _ in range(self.eval_steps):
-                    # Choose an action
-                    action_ = self.policy[state_]
-                    # Get reward and next state
-                    state_, reward_, _ = self.mdp.virtual_step(state_, action_)
-                    # Append to evaluation reward
-                    eval_cumulative_reward.append(reward_)
-                end = time.time()
-                print('Evaluation finished. Time elapsed: {}'.format(end - start))
-                eval_cumulative_reward = np.sum(eval_cumulative_reward)
-                print('Cumulative reward: {}'.format(eval_cumulative_reward))
-                if count_oracle_optimal:
-                    print('This is {0:.2f}% from oracle optimal result.'.format((eval_cumulative_reward / self.oracle_optimal_score) * 100))
-            """
-
-            self.t += 1
-
-        if calc_oracle_optimal:
-
-            path_to_save_plot = os.path.join(crd.logs.path, "plot.jpg")
-            logger.info('Saving reward plot to: {}'.format(path_to_save_plot))
-            g = pd.DataFrame(list(zip(self.global_reward, self.oracle_optimal_score)),
-                         columns=['LinUCRL', 'Oracle_optimal']).plot()
-            fig = g.get_figure()
-            fig.savefig(path_to_save_plot)
+                # chill out
+                pass
 
         return None
 

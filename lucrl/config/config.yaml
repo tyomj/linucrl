@@ -5,7 +5,7 @@ system_workers_count: 10
 dataset:
   movies_path: ml-1m/movies.csv
   ratings_path: ml-1m/ratings.csv
-  min_num_of_ratings: 10000
+  min_num_of_ratings: 10500
   GENRES:
     - Action
     - Adventure
@@ -29,7 +29,7 @@ dataset:
 
 # MDP params
 mdp:
-  window_size: 3
+  window_size: 5
   state_delimiter: "-"
 
 # LinUCRL params
@@ -38,10 +38,11 @@ linucrl:
   eval_steps: 100 # number of steps to take during evaluation
   d: 5 # number of polynomial features
   max_rounds: 1000 # maximum number of rounds for the whole algorithm
-  d_rate: 0.5 # gamma parameter for value iteration
-  vi_threshold: 0.001 # when to stop VI algorithm
+  d_rate: 0.99 # gamma parameter for value iteration.
+  vi_iters: 100
+  vi_threshold: 0.00001 # when to stop VI algorithm
   linreg_reg_term: 0.90
-  alpha:  0.5 # a parameter to limit boredom effect
+  alpha:  1.5 # a parameter to limit boredom effect
   R_constant: 1 # no idea, but 1 is OK since it is constant
   B_constant: 1 # no idea, but 1 is OK since it is constant
 

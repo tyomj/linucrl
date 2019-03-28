@@ -21,6 +21,5 @@ def train():
     lucrl = LinUCRL(mdp)
     lucrl.fit()
 
-
 if __name__ == '__main__':
     train()
